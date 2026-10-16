@@ -1,0 +1,22 @@
+{
+  "name": "subagent-city",
+  "version": "0.1.0",
+  "description": "See the Claude Code sessions open on your machine, and the subagents each one is running, as a live map.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "subagent-city": "bin/subagent-city.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "public"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node bin/subagent-city.mjs",
+    "test": "node --test"
+  }
+}
