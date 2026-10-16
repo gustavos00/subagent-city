@@ -53,15 +53,19 @@ These are Claude Code's own files, not a public API, so a Claude Code update can
 ## Development
 
 ```bash
+npm install
+npm run dev     # server on :4777 and the Vite page on :5173
 npm test
+npm run build   # builds the page, then the server, then serves it with npm start
 ```
 
 | Path | What it holds |
 | --- | --- |
-| `src/sessions.mjs` | Reads `~/.claude` |
-| `src/server.mjs` | The local HTTP server |
-| `public/layout.js` | The map's model and layout, with no DOM, so the tests can run it |
-| `public/app.js` | Draws the canvas and the side panel |
+| `packages/server` | Reads `~/.claude` and serves `/api/sessions` and the built page |
+| `packages/shared` | The API types |
+| `packages/web/src/lib` | The map's model and layout (no DOM) and the text formatting |
+| `packages/web/src/map` | The canvas map: drawing, hit testing, pan and zoom |
+| `packages/web/src/components` | The header and the side panel |
 
 ## License
 

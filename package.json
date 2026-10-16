@@ -1,23 +1,38 @@
 {
-  "name": "subagent-city",
+  "name": "subagent-city-monorepo",
   "version": "0.1.0",
-  "description": "See the Claude Code sessions open on your machine, and the subagents each one is running, as a live map.",
-  "license": "MIT",
-  "type": "module",
   "private": true,
-  "bin": {
-    "subagent-city": "bin/subagent-city.mjs"
-  },
-  "files": [
-    "bin",
-    "src",
-    "public"
+  "type": "module",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
-    "start": "node bin/subagent-city.mjs",
-    "test": "node --test"
+    "build": "npm run build -w @subagent-city/web && npm run build -w subagent-city",
+    "dev": "concurrently -n server,web -c blue,magenta \"npm run dev -w subagent-city\" \"npm run dev -w @subagent-city/web\"",
+    "lint": "eslint . --max-warnings 0",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "start": "npm run start -w subagent-city",
+    "demo": "npm run demo -w subagent-city"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.7",
+    "globals": "^17.13.0",
+    "prettier": "^3.9.10",
+    "typescript": "~5.9",
+    "typescript-eslint": "^8.71.2"
   }
 }

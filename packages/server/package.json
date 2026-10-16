@@ -1,0 +1,32 @@
+{
+  "name": "subagent-city",
+  "version": "0.1.0",
+  "description": "See the Claude Code sessions open on your machine, and the subagents each one is running, as a live map.",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "subagent-city": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "public"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-web.mjs",
+    "dev": "tsx watch src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "start": "node dist/cli.js",
+    "demo": "tsx src/demo.ts"
+  },
+  "devDependencies": {
+    "@subagent-city/shared": "*",
+    "@types/node": "^20.19.43",
+    "tsx": "^4.23.15",
+    "vitest": "^5.0.5"
+  }
+}
