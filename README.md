@@ -62,3 +62,7 @@ npm test
 | `src/server.mjs` | The local HTTP server |
 | `public/layout.js` | The map's model and layout, with no DOM, so the tests can run it |
 | `public/app.js` | Draws the canvas and the side panel |
+
+## License
+
+MIT. See [LICENSE](LICENSE).

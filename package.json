@@ -2,6 +2,7 @@
   "name": "subagent-city",
   "version": "0.1.0",
   "description": "See the Claude Code sessions open on your machine, and the subagents each one is running, as a live map.",
+  "license": "MIT",
   "type": "module",
   "private": true,
   "bin": {
