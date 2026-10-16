@@ -1,9 +1,29 @@
-import { formatModelName, readModelFamily } from "../lib/format";
-import type { MapModel, MapNode, Positions } from "../lib/layout";
-import { readColumnX, readNodeRadius, toScreen, type Camera } from "./geometry";
+import { formatModelName } from "../lib/format";
+import { readToneKey } from "../lib/modelTones";
+import { type MapModel, type MapNode, type Positions } from "../lib/layout";
+import {
+  CHIP_GAP,
+  CHIP_HEIGHT,
+  CHIP_MIN_ZOOM,
+  CHIP_PADDING,
+  COLUMN_TITLES,
+  COLUMN_TITLE_RISE,
+  FONTS,
+  GLOW_FACTOR,
+  IDLE_PILL,
+  LABEL_GAP,
+  LABEL_MAX_LENGTH,
+  META_DROP,
+  META_MIN_ZOOM,
+  META_RAISE,
+  PULSE_PERIOD_MS,
+  PULSE_SPREAD,
+} from "./constants";
+import { convertToScreen, readColumnX, readScaledRadius, type Camera } from "./geometry";
 import type { Palette } from "./palette";
+import { readIdlePillWidth } from "./textMetrics";
 
-export interface Scene {
+interface DrawScene {
   model: MapModel;
   pos: Positions;
   cam: Camera;
@@ -21,15 +41,13 @@ interface Point {
   y: number;
 }
 
-function fade(color: string, alpha: number): string {
-  return `color-mix(in srgb, ${color} ${alpha * 100}%, transparent)`;
-}
+type Context = CanvasRenderingContext2D;
 
 function readNodeColor(node: MapNode, palette: Palette): string {
   return node.type === "project" ? palette.project : palette[node.state];
 }
 
-function traceEdge(ctx: CanvasRenderingContext2D, a: Point, b: Point): void {
+function traceEdge(ctx: Context, a: Point, b: Point): void {
   const mid = (a.x + b.x) / 2;
   ctx.beginPath();
   ctx.moveTo(a.x, a.y);
@@ -45,35 +63,28 @@ function readPointOnEdge(a: Point, b: Point, t: number): Point {
   };
 }
 
-function drawColumnTitles(ctx: CanvasRenderingContext2D, scene: Scene): void {
+function drawColumnTitles(ctx: Context, scene: DrawScene): void {
   const { model, pos, cam, palette } = scene;
-  ctx.font = "700 11px system-ui, sans-serif";
+  ctx.font = FONTS.columnTitle;
   ctx.textAlign = "center";
-  ctx.fillStyle = fade(palette.muted, 0.55);
-  const top = Math.min(...model.nodes.flatMap((n) => pos.get(n.id)?.y ?? [])) - 40;
-  ["SESSIONS", "SUBAGENTS", "PROJECTS"].forEach((title, col) => {
-    if (!model.nodes.some((n) => n.col === col)) return;
-    ctx.fillText(title, readColumnX(col) * cam.k + cam.x, top * cam.k + cam.y);
+  ctx.fillStyle = palette.columnTitle;
+  const top = Math.min(...model.nodes.flatMap((n) => pos.get(n.id)?.y ?? [])) - COLUMN_TITLE_RISE;
+  COLUMN_TITLES.forEach((title, col) => {
+    if (model.nodes.some((n) => n.col === col))
+      ctx.fillText(title, readColumnX(col) * cam.k + cam.x, top * cam.k + cam.y);
   });
 }
 
-function drawModelChip(ctx: CanvasRenderingContext2D, palette: Palette, model: string, x: number, y: number): void {
+function drawModelChip(ctx: Context, palette: Palette, model: string, x: number, y: number): void {
   const text = formatModelName(model);
-  const family = readModelFamily(model);
-  const tone =
-    family === "opus"
-      ? { base: palette.opus, label: palette.opusText }
-      : family === "haiku"
-        ? { base: palette.haiku, label: palette.haikuText }
-        : { base: palette.sonnet, label: palette.sonnetText };
-  ctx.font = "600 10px system-ui, sans-serif";
-  const w = ctx.measureText(text).width + 12;
-  const h = 15;
+  const tone = palette.tones[readToneKey(model)];
+  ctx.font = FONTS.chip;
+  const w = ctx.measureText(text).width + CHIP_PADDING;
   ctx.beginPath();
-  ctx.roundRect(x, y - h / 2, w, h, h / 2);
-  ctx.fillStyle = fade(tone.base, 0.16);
+  ctx.roundRect(x, y - CHIP_HEIGHT / 2, w, CHIP_HEIGHT, CHIP_HEIGHT / 2);
+  ctx.fillStyle = tone.fill;
   ctx.fill();
-  ctx.strokeStyle = fade(tone.base, 0.55);
+  ctx.strokeStyle = tone.stroke;
   ctx.lineWidth = 1;
   ctx.stroke();
   ctx.textAlign = "center";
@@ -81,115 +92,140 @@ function drawModelChip(ctx: CanvasRenderingContext2D, palette: Palette, model: s
   ctx.fillText(text, x + w / 2, y + 0.5);
 }
 
-function drawLabel(ctx: CanvasRenderingContext2D, scene: Scene, node: MapNode, p: Point): void {
-  const { palette } = scene;
-  const k = scene.cam.k;
-  const r = readNodeRadius(node) * Math.max(0.6, k);
-  const isSession = node.type === "session";
-  const x = isSession ? p.x - r - 10 : p.x + r + 10;
-  ctx.textAlign = isSession ? "right" : "left";
-  ctx.textBaseline = "middle";
+/** Draws text with a halo in the background colour; returns its width. */
+function drawHaloText(ctx: Context, scene: DrawScene, text: string, font: string, fill: string, at: Point): number {
+  ctx.font = font;
   ctx.lineJoin = "round";
   ctx.lineWidth = 3;
-  ctx.strokeStyle = palette.bg;
-  ctx.font = isSession ? "600 13px system-ui, sans-serif" : "500 12px system-ui, sans-serif";
-  const text = node.label.length > 34 ? `${node.label.slice(0, 33)}…` : node.label;
-  const meta =
-    node.type === "session"
-      ? [node.session.project, formatModelName(node.session.model)].filter(Boolean).join(" · ")
-      : "";
-  const y = meta && k >= 0.55 ? p.y - 7 : p.y;
-  ctx.strokeText(text, x, y);
-  ctx.fillStyle = node.state === "idle" && node.type !== "project" ? palette.muted : palette.text;
-  ctx.fillText(text, x, y);
-  const textWidth = ctx.measureText(text).width;
-  if (meta && k >= 0.55) {
-    ctx.font = "500 11px system-ui, sans-serif";
-    ctx.strokeText(meta, x, p.y + 9);
-    ctx.fillStyle = palette.muted;
-    ctx.fillText(meta, x, p.y + 9);
-  }
-  if (node.type === "subagent" && node.sub.model && k >= 0.45)
-    drawModelChip(ctx, palette, node.sub.model, x + textWidth + 8, y);
+  ctx.strokeStyle = scene.palette.bg;
+  ctx.strokeText(text, at.x, at.y);
+  ctx.fillStyle = fill;
+  ctx.fillText(text, at.x, at.y);
+  return ctx.measureText(text).width;
 }
 
-function drawIdlePill(ctx: CanvasRenderingContext2D, scene: Scene, node: MapNode, p: Point): void {
+function readLabelText(node: MapNode): string {
+  return node.label.length > LABEL_MAX_LENGTH ? `${node.label.slice(0, LABEL_MAX_LENGTH - 1)}…` : node.label;
+}
+
+function readMetaText(node: MapNode): string {
+  if (node.type !== "session") return "";
+  return [node.session.project, formatModelName(node.session.model)].filter(Boolean).join(" · ");
+}
+
+function readLabelColor(node: MapNode, palette: Palette): string {
+  return node.state === "idle" && node.type !== "project" ? palette.muted : palette.text;
+}
+
+function isChipShown(node: MapNode, zoom: number): boolean {
+  return node.type === "subagent" && node.sub.model !== "" && zoom >= CHIP_MIN_ZOOM;
+}
+
+function drawLabel(ctx: Context, scene: DrawScene, node: MapNode, p: Point): void {
+  const { palette, cam } = scene;
+  const isSession = node.type === "session";
+  const reach = readScaledRadius(node, cam) + LABEL_GAP;
+  const x = isSession ? p.x - reach : p.x + reach;
+  ctx.textAlign = isSession ? "right" : "left";
+  ctx.textBaseline = "middle";
+  const meta = cam.k >= META_MIN_ZOOM ? readMetaText(node) : "";
+  const at = { x, y: meta ? p.y - META_RAISE : p.y };
+  const font = isSession ? FONTS.sessionLabel : FONTS.nodeLabel;
+  const width = drawHaloText(ctx, scene, readLabelText(node), font, readLabelColor(node, palette), at);
+  if (meta) drawHaloText(ctx, scene, meta, FONTS.meta, palette.muted, { x, y: p.y + META_DROP });
+  if (node.type === "subagent" && isChipShown(node, cam.k)) {
+    drawModelChip(ctx, palette, node.sub.model, x + width + CHIP_GAP, at.y);
+  }
+}
+
+function drawIdlePill(ctx: Context, scene: DrawScene, node: MapNode, p: Point): void {
   const { palette } = scene;
-  ctx.font = "500 11px system-ui, sans-serif";
-  const w = ctx.measureText(node.label).width + 16;
+  const { height, left, halfHeight, textOffset } = IDLE_PILL;
+  ctx.font = FONTS.idlePill;
   ctx.beginPath();
-  ctx.roundRect(p.x - 6, p.y - 9, w, 18, 9);
-  ctx.fillStyle = fade(palette.idle, 0.18);
+  ctx.roundRect(p.x - left, p.y - halfHeight, readIdlePillWidth(node.label), height, halfHeight);
+  ctx.fillStyle = palette.pillFill;
   ctx.fill();
-  ctx.strokeStyle = node.id === scene.hoverId ? palette.text : fade(palette.muted, 0.5);
+  ctx.strokeStyle = node.id === scene.hoverId ? palette.text : palette.pillStroke;
   ctx.lineWidth = 1;
   ctx.stroke();
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
   ctx.fillStyle = palette.muted;
-  ctx.fillText(node.label, p.x + 2, p.y + 0.5);
+  ctx.fillText(node.label, p.x + textOffset, p.y + 0.5);
 }
 
-function drawNode(ctx: CanvasRenderingContext2D, scene: Scene, node: MapNode, p: Point): void {
-  const { palette, selectedId } = scene;
+function isFocused(node: MapNode, selectedId: string | null): boolean {
+  if (selectedId === null) return false;
+  return node.id === `s:${selectedId}` || (node.type === "subagent" && node.sessionId === selectedId);
+}
+
+function drawGlow(ctx: Context, palette: Palette, p: Point, radius: number): void {
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, radius * GLOW_FACTOR, 0, Math.PI * 2);
+  ctx.fillStyle = palette.workingGlow;
+  ctx.fill();
+}
+
+function drawNode(ctx: Context, scene: DrawScene, node: MapNode, p: Point): void {
+  const { palette } = scene;
   if (node.type === "idle") {
     drawIdlePill(ctx, scene, node, p);
     return;
   }
-  const k = Math.max(0.6, scene.cam.k);
   const color = readNodeColor(node, palette);
-  const focus =
-    selectedId !== null &&
-    (node.id === `s:${selectedId}` || (node.type === "subagent" && node.parent === `s:${selectedId}`));
-  const r = readNodeRadius(node) * k;
-  if (node.state === "working" && node.type !== "project") {
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, r * 2, 0, Math.PI * 2);
-    ctx.fillStyle = fade(palette.working, 0.12);
-    ctx.fill();
-  }
+  const r = readScaledRadius(node, scene.cam);
+  if (node.state === "working" && node.type !== "project") drawGlow(ctx, palette, p, r);
   ctx.beginPath();
   ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
   ctx.fillStyle = node.state === "idle" && node.type === "subagent" ? palette.idleNode : color;
   ctx.fill();
-  const emphasised = node.id === scene.hoverId || focus;
+  const emphasised = node.id === scene.hoverId || isFocused(node, scene.selectedId);
   ctx.lineWidth = emphasised ? 2.5 : 1.5;
   ctx.strokeStyle = emphasised ? palette.text : color;
   ctx.stroke();
   drawLabel(ctx, scene, node, p);
 }
 
-/** Draws the whole map. Returns true while an active edge is animating, so the caller schedules the next frame. */
-export function drawMap(ctx: CanvasRenderingContext2D, scene: Scene): boolean {
-  const { model, pos, cam, palette } = scene;
-  ctx.clearRect(0, 0, scene.width, scene.height);
-  if (!model.nodes.length) return false;
-  drawColumnTitles(ctx, scene);
-  const screen = (id: string): Point | null => {
-    const at = pos.get(id);
-    return at ? toScreen(at, cam) : null;
-  };
+function drawPulse(ctx: Context, scene: DrawScene, to: string, a: Point, b: Point): void {
+  const t = (scene.now / PULSE_PERIOD_MS + (to.length % PULSE_SPREAD) / PULSE_SPREAD) % 1;
+  const dot = readPointOnEdge(a, b, t);
+  ctx.beginPath();
+  ctx.arc(dot.x, dot.y, 2.5, 0, Math.PI * 2);
+  ctx.fillStyle = scene.palette.working;
+  ctx.fill();
+}
+
+function drawEdges(ctx: Context, scene: DrawScene, findScreenPoint: (id: string) => Point | null): boolean {
   let animating = false;
-  for (const edge of model.edges) {
-    const a = screen(edge.from);
-    const b = screen(edge.to);
+  for (const edge of scene.model.edges) {
+    const a = findScreenPoint(edge.from);
+    const b = findScreenPoint(edge.to);
     if (!a || !b) continue;
     traceEdge(ctx, a, b);
-    ctx.strokeStyle = edge.active ? fade(palette.working, 0.55) : fade(palette.muted, 0.22);
+    ctx.strokeStyle = edge.active ? scene.palette.edgeActive : scene.palette.edge;
     ctx.lineWidth = edge.active ? 1.6 : 1;
     ctx.stroke();
     if (edge.active && scene.animate) {
       animating = true;
-      const t = (scene.now / 1800 + (edge.to.length % 7) / 7) % 1;
-      const dot = readPointOnEdge(a, b, t);
-      ctx.beginPath();
-      ctx.arc(dot.x, dot.y, 2.5, 0, Math.PI * 2);
-      ctx.fillStyle = palette.working;
-      ctx.fill();
+      drawPulse(ctx, scene, edge.to, a, b);
     }
   }
-  for (const node of model.nodes) {
-    const p = screen(node.id);
+  return animating;
+}
+
+/** Draws the whole map. Returns true while an active edge is animating, so the caller schedules the next frame. */
+export function drawMap(ctx: Context, scene: DrawScene): boolean {
+  ctx.clearRect(0, 0, scene.width, scene.height);
+  if (!scene.model.nodes.length) return false;
+  drawColumnTitles(ctx, scene);
+  const findScreenPoint = (id: string): Point | null => {
+    const at = scene.pos.get(id);
+    return at ? convertToScreen(at, scene.cam) : null;
+  };
+  const animating = drawEdges(ctx, scene, findScreenPoint);
+  for (const node of scene.model.nodes) {
+    const p = findScreenPoint(node.id);
     if (p) drawNode(ctx, scene, node, p);
   }
   return animating;

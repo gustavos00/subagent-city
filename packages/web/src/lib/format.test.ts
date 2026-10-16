@@ -41,7 +41,7 @@ describe("describeAction", () => {
     expect(describeAction(createSubagent({ lastAction }))).toBe("Bash · npm test");
   });
   it("quotes the last words", () => {
-    const lastAction = { kind: "text" as const, tool: "", detail: "All good", at: null };
+    const lastAction = { kind: "text" as const, detail: "All good", at: null };
     expect(describeAction(createSubagent({ lastAction }))).toBe("“All good”");
   });
   it("says it handed its result back when done or after a handback", () => {
@@ -61,7 +61,7 @@ describe("formatSummary", () => {
     const sessions = [
       createSession({
         id: "a",
-        subagentList: [createSubagent({ id: "1" }), createSubagent({ id: "2", state: "done" })],
+        subagents: [createSubagent({ id: "1" }), createSubagent({ id: "2", state: "done" })],
       }),
     ];
     expect(formatSummary(sessions, false)).toBe("1 subagent working · 0 paused · 1 done · in 1 open session");

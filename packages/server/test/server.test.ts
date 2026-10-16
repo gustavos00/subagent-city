@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { request, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -24,15 +24,12 @@ const ONE_SESSION: Session = {
   id: "s",
   title: "One",
   project: "",
-  cwd: "",
   state: "idle",
-  entrypoint: "",
   model: "",
   startedAt: null,
   lastActivity: "2026-01-01T10:00:00.000Z",
-  memoryMB: null,
-  subagents: 0,
-  subagentList: [],
+  subagentCount: 0,
+  subagents: [],
 };
 
 let publicDir = "";
@@ -67,13 +64,9 @@ function sendRequest(port: number, { path = "/", method = "GET", host = `localho
 }
 
 async function startServer(readSessions: () => Promise<Session[]>): Promise<{ server: Server; port: number }> {
-  const probe = createSessionServer({ port: 0, readSessions, publicDir });
-  await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
-  const { port } = probe.address() as AddressInfo;
-  probe.close();
-  const server = createSessionServer({ port, readSessions, publicDir });
-  await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
-  return { server, port };
+  const server = createSessionServer({ readSessions, publicDir });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { server, port: (server.address() as AddressInfo).port };
 }
 
 test("only requests addressed to localhost are allowed", () => {
@@ -81,6 +74,7 @@ test("only requests addressed to localhost are allowed", () => {
   expect(isLocalHost("127.0.0.1:4777", 4777)).toBe(true);
   expect(isLocalHost("evil.example:4777", 4777)).toBe(false);
   expect(isLocalHost("localhost:80", 4777)).toBe(false);
+  expect(isLocalHost("[::1]:4777", 4777)).toBe(false);
   expect(isLocalHost(undefined, 4777)).toBe(false);
 });
 
@@ -128,6 +122,42 @@ test("a failing read answers 500 instead of crashing", async () => {
   const { server, port } = await startServer(() => Promise.reject(new Error("boom")));
   try {
     expect((await sendRequest(port, { path: "/api/sessions" })).status).toBe(500);
+  } finally {
+    server.close();
+  }
+});
+
+test("a symlink inside the folder that points outside it is not served", async () => {
+  const outside = `${publicDir}-outside.json`;
+  await symlink(outside, join(publicDir, "escape.json"));
+  expect(await readStaticFile(publicDir, "/escape.json")).toBeNull();
+});
+
+test("a HEAD request answers 200 with no body", async () => {
+  const { server, port } = await startServer(() => Promise.resolve([ONE_SESSION]));
+  try {
+    const reply = await sendRequest(port, { method: "HEAD", path: "/api/sessions" });
+    expect(reply.status).toBe(200);
+    expect(reply.body).toBe("");
+  } finally {
+    server.close();
+  }
+});
+
+test("two requests at the same time share one read of the sessions", async () => {
+  let reads = 0;
+  const { server, port } = await startServer(async () => {
+    reads += 1;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return [ONE_SESSION];
+  });
+  try {
+    const replies = await Promise.all([
+      sendRequest(port, { path: "/api/sessions" }),
+      sendRequest(port, { path: "/api/sessions" }),
+    ]);
+    expect(replies.map((reply) => reply.status)).toEqual([200, 200]);
+    expect(reads).toBe(1);
   } finally {
     server.close();
   }

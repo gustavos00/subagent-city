@@ -1,5 +1,6 @@
 import type { Session } from "@subagent-city/shared";
 import { formatCount, STATE_LABELS } from "../lib/format";
+import { foldIdleSubagents } from "../lib/idle";
 import { ModelBadge } from "./ModelBadge";
 import { StateDot } from "./StateDot";
 import { SubagentCard } from "./SubagentCard";
@@ -13,23 +14,22 @@ interface SessionSectionProps {
 }
 
 export function SessionSection({ session, isSelected, isExpanded, onSelect, onToggleIdle }: SessionSectionProps) {
-  const shown = isExpanded ? session.subagentList : session.subagentList.filter((sub) => sub.state !== "idle");
-  const idleCount = session.subagentList.filter((sub) => sub.state === "idle").length;
+  const { shown, idleCount } = foldIdleSubagents(session, isExpanded);
   const meta = [
     `Session ${STATE_LABELS[session.state].toLowerCase()}`,
     session.project,
-    formatCount(session.subagents, "subagent"),
+    formatCount(session.subagentCount, "subagent"),
   ]
     .filter(Boolean)
     .join(" · ");
   return (
     <li
       data-session={session.id}
-      aria-current={isSelected ? "true" : undefined}
       className={`rounded-[10px] border bg-card ${isSelected ? "border-recent shadow-[inset_0_0_0_1px_var(--color-recent)]" : "border-border"}`}
     >
       <button
         type="button"
+        aria-pressed={isSelected}
         onClick={() => {
           onSelect(session.id);
         }}

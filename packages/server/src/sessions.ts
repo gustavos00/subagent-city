@@ -9,18 +9,23 @@ import { join } from "node:path";
 import type { LastAction, Session, SessionState, Subagent, SubagentState } from "@subagent-city/shared";
 import {
   isRecord,
+  pickString,
   mapTranscriptFolders,
-  readChunk,
+  readHead,
   readJson,
-  readMemory,
+  readTail,
   readOpenProcesses,
   resolveClaudeDir,
 } from "./claude-files.js";
+import { createMtimeCache } from "./mtime-cache.js";
 
 const WORKING_MS = 90 * 1000;
 const RECENT_MS = 60 * 60 * 1000;
 const MAX_SUBAGENTS = 40;
 const MAX_NAME = 24;
+const STATE_RANK: Record<SessionState, number> = { working: 0, idle: 1 };
+
+type OpenProcess = Awaited<ReturnType<typeof readOpenProcesses>>[number];
 
 interface SubagentMeta {
   name: string;
@@ -94,9 +99,9 @@ export function pickSessionState(status: string | undefined, ageMs: number): Ses
 export function parseSubagentMeta(meta: unknown): SubagentMeta {
   const fields = isRecord(meta) ? meta : {};
   const { description: rawDescription, model: rawModel, agentType } = fields;
-  const description = typeof rawDescription === "string" ? rawDescription.trim() : "";
-  const model = typeof rawModel === "string" ? rawModel : "";
-  const type = typeof agentType === "string" ? agentType : "";
+  const description = pickString(rawDescription).trim();
+  const model = pickString(rawModel);
+  const type = pickString(agentType);
   const colon = description.indexOf(":");
   if (colon > 0) {
     const name = description.slice(0, colon).trim();
@@ -109,31 +114,26 @@ export function parseSubagentMeta(meta: unknown): SubagentMeta {
   return { name: "", task: description, model, type };
 }
 
-/**
- * The first or last model named in a chunk of transcript.
- * @param text - some JSONL lines
- * @param last - true for the last one (the model now), false for the first
- * @returns a model id such as "claude-sonnet-4-5", or ""
- */
-export function findModel(text: string, last = false): string {
-  const all = [...text.matchAll(/"model":"(claude-[^"]+)"/g)];
-  const match = last ? all.at(-1) : all[0];
-  return match?.[1] ?? "";
+function findModels(text: string): string[] {
+  return [...text.matchAll(/"model":"(claude-[^"]+)"/g)].map((match) => match[1] ?? "");
 }
+
+/** The first model named in a chunk of transcript, such as "claude-sonnet-4-5", or "". */
+export function findFirstModel(text: string): string {
+  return findModels(text)[0] ?? "";
+}
+
+/** The last model named in a chunk of transcript (the model now), or "". */
+export function findLastModel(text: string): string {
+  return findModels(text).at(-1) ?? "";
+}
+
+const TOOL_INPUT_KEYS = ["description", "command", "file_path", "path", "pattern", "url", "query", "prompt"];
 
 /** A short, one-line account of what a tool call does, from its input. */
 function describeToolInput(input: unknown): string {
   if (!isRecord(input)) return "";
-  const value =
-    input["description"] ??
-    input["command"] ??
-    input["file_path"] ??
-    input["path"] ??
-    input["pattern"] ??
-    input["url"] ??
-    input["query"] ??
-    input["prompt"];
-  const text = typeof value === "string" ? value : "";
+  const text = pickString(TOOL_INPUT_KEYS.map((key) => input[key]).find((value) => typeof value === "string"));
   const short = /^(\/|[A-Za-z]:\\)/.test(text) && !/\s/.test(text) ? readLastSegment(text) : text;
   return short.replace(/\s+/g, " ").trim().slice(0, 90);
 }
@@ -163,15 +163,15 @@ export function readLastAction(text: string): LastAction | null {
     const tool = blocks.findLast((block) => block["type"] === "tool_use");
     if (tool) {
       const name = tool["name"];
-      return { kind: "tool", tool: typeof name === "string" ? name : "", detail: describeToolInput(tool["input"]), at };
+      return { kind: "tool", tool: pickString(name), detail: describeToolInput(tool["input"]), at };
     }
     const words = blocks
       .filter((block) => block["type"] === "text")
-      .map((block) => (typeof block["text"] === "string" ? block["text"] : ""))
+      .map((block) => pickString(block["text"]))
       .join(" ")
       .replace(/\s+/g, " ")
       .trim();
-    if (words) return { kind: "text", tool: "", detail: words.slice(0, 140), at };
+    if (words) return { kind: "text", detail: words.slice(0, 140), at };
   }
   return null;
 }
@@ -181,13 +181,35 @@ function readFirstTimestamp(text: string): string | null {
   return /"timestamp":"([^"]+)"/.exec(text)?.[1] ?? null;
 }
 
+interface ParsedSubagent {
+  meta: SubagentMeta;
+  model: string;
+  startedAt: string | null;
+  lastAction: LastAction | null;
+}
+
+const subagentCache = createMtimeCache<ParsedSubagent>();
+const sessionModelCache = createMtimeCache<string>();
+
+async function parseSubagentFiles(file: string): Promise<ParsedSubagent> {
+  const meta = parseSubagentMeta(await readJson(file.replace(/\.jsonl$/, ".meta.json")));
+  const head = await readHead(file);
+  return {
+    meta,
+    model: meta.model || findFirstModel(head),
+    startedAt: readFirstTimestamp(head),
+    lastAction: readLastAction(await readTail(file)),
+  };
+}
+
 /**
- * Every subagent a session has started, most recently active first.
+ * Every subagent a session has started, most recently active first. A transcript is only read again when it changes.
  * @param folder - the session's project folder
  * @param sessionId - the session
  * @param now - the current time (ms)
  */
-async function readSubagents(folder: string, sessionId: string, now: number): Promise<SubagentList> {
+async function readSubagents(folder: string | undefined, sessionId: string, now: number): Promise<SubagentList> {
+  if (!folder) return { total: 0, list: [] };
   const dir = join(folder, sessionId, "subagents");
   let files: string[];
   try {
@@ -203,21 +225,55 @@ async function readSubagents(folder: string, sessionId: string, now: number): Pr
   found.sort((a, b) => b.mtimeMs - a.mtimeMs);
   const list = await Promise.all(
     found.slice(0, MAX_SUBAGENTS).map(async (f): Promise<Subagent> => {
-      const meta = parseSubagentMeta(await readJson(f.file.replace(/\.jsonl$/, ".meta.json")));
-      const head = await readChunk(f.file, false);
-      const lastAction = readLastAction(await readChunk(f.file, true));
+      const { meta, model, startedAt, lastAction } = await subagentCache.load(f.file, f.mtimeMs, () =>
+        parseSubagentFiles(f.file),
+      );
       return {
         id: f.id,
-        ...meta,
-        model: meta.model || findModel(head),
+        name: meta.name,
+        task: meta.task,
+        type: meta.type,
+        model,
         state: pickSubagentState(now - f.mtimeMs, lastAction),
-        startedAt: readFirstTimestamp(head),
+        startedAt,
         lastActivity: new Date(f.mtimeMs).toISOString(),
         lastAction,
       };
     }),
   );
   return { total: found.length, list };
+}
+
+async function readTranscript(
+  folder: string | undefined,
+  sessionId: string,
+): Promise<{ mtimeMs: number; model: string } | null> {
+  if (!folder) return null;
+  const transcript = join(folder, `${sessionId}.jsonl`);
+  const info = await stat(transcript).catch(() => null);
+  if (!info) return null;
+  const model = await sessionModelCache.load(transcript, info.mtimeMs, async () =>
+    findLastModel(await readTail(transcript)),
+  );
+  return { mtimeMs: info.mtimeMs, model };
+}
+
+async function buildSession(proc: OpenProcess, folder: string | undefined, now: number): Promise<Session> {
+  const transcript = await readTranscript(folder, proc.sessionId);
+  const lastMs = transcript?.mtimeMs ?? proc.startedAt ?? now;
+  const subs = await readSubagents(folder, proc.sessionId, now);
+  const project = pickProjectName(proc.cwd);
+  return {
+    id: proc.sessionId,
+    title: proc.name || project || "Untitled session",
+    project,
+    state: pickSessionState(proc.status, now - lastMs),
+    model: transcript?.model ?? "",
+    startedAt: proc.startedAt ? new Date(proc.startedAt).toISOString() : null,
+    lastActivity: new Date(lastMs).toISOString(),
+    subagentCount: subs.total,
+    subagents: subs.list,
+  };
 }
 
 /**
@@ -230,32 +286,8 @@ export async function readOpenSessions({
 }: { claudeDir?: string; now?: number } = {}): Promise<Session[]> {
   const processes = await readOpenProcesses(join(claudeDir, "sessions"));
   const folders = await mapTranscriptFolders(join(claudeDir, "projects"), new Set(processes.map((p) => p.sessionId)));
-  const memory = await readMemory(processes.map((p) => p.pid));
-  const sessions = await Promise.all(
-    processes.map(async (proc): Promise<Session> => {
-      const folder = folders.get(proc.sessionId);
-      const transcript = folder ? join(folder, `${proc.sessionId}.jsonl`) : null;
-      const info = transcript ? await stat(transcript).catch(() => null) : null;
-      const lastMs = info?.mtimeMs ?? proc.startedAt ?? now;
-      const subs: SubagentList = folder ? await readSubagents(folder, proc.sessionId, now) : { total: 0, list: [] };
-      const project = pickProjectName(proc.cwd);
-      return {
-        id: proc.sessionId,
-        title: proc.name || project || "Untitled session",
-        project,
-        cwd: proc.cwd,
-        state: pickSessionState(proc.status, now - lastMs),
-        entrypoint: proc.entrypoint,
-        model: transcript ? findModel(await readChunk(transcript, true), true) : "",
-        startedAt: proc.startedAt ? new Date(proc.startedAt).toISOString() : null,
-        lastActivity: new Date(lastMs).toISOString(),
-        memoryMB: memory.get(proc.pid) ?? null,
-        subagents: subs.total,
-        subagentList: subs.list,
-      };
-    }),
-  );
-  return sessions.sort(
-    (a, b) => (a.state === b.state ? 0 : a.state === "working" ? -1 : 1) || a.title.localeCompare(b.title),
-  );
+  const sessions = await Promise.all(processes.map((proc) => buildSession(proc, folders.get(proc.sessionId), now)));
+  subagentCache.finishPoll();
+  sessionModelCache.finishPoll();
+  return sessions.sort((a, b) => STATE_RANK[a.state] - STATE_RANK[b.state] || a.title.localeCompare(b.title));
 }

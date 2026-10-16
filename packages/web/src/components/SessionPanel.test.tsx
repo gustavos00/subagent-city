@@ -5,17 +5,17 @@ import { createSession, createSubagent } from "../test/fixtures";
 import { SessionPanel } from "./SessionPanel";
 
 const sessions = [
-  createSession({ id: "quiet", title: "Quick question", subagentList: [] }),
+  createSession({ id: "quiet", title: "Quick question", subagents: [] }),
   createSession({
     id: "calm",
     title: "Calm session",
-    subagentList: [createSubagent({ id: "d", name: "Done one", state: "done" })],
+    subagents: [createSubagent({ id: "d", name: "Done one", state: "done" })],
   }),
   createSession({
     id: "busy",
     title: "Busy session",
     state: "working",
-    subagentList: [
+    subagents: [
       createSubagent({ id: "w", name: "Worker" }),
       createSubagent({ id: "i", name: "Sleeper", state: "idle" }),
     ],
@@ -41,12 +41,13 @@ function Harness() {
 describe("SessionPanel", () => {
   it("groups sessions with subagents, busiest first, and then the quiet ones", () => {
     render(<Harness />);
-    expect(screen.getByText("Subagents by session")).toBeInTheDocument();
-    expect(screen.getByText("Sessions without subagents · 1")).toBeInTheDocument();
-    const titles = screen.getAllByRole("button", { name: /session|question/i }).map((b) => b.textContent);
-    expect(titles[0]).toContain("Busy session");
-    expect(titles[1]).toContain("Calm session");
-    expect(titles[2]).toContain("Quick question");
+    expect(screen.getByRole("heading", { name: "Subagents by session" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Sessions without subagents · 1" })).toBeInTheDocument();
+    const buttons = screen.getAllByRole("button", { name: /^(Busy session|Calm session|Quick question)/ });
+    expect(buttons).toHaveLength(3);
+    expect(buttons[0]).toHaveAccessibleName(/^Busy session/);
+    expect(buttons[1]).toHaveAccessibleName(/^Calm session/);
+    expect(buttons[2]).toHaveAccessibleName(/^Quick question/);
   });
 
   it("hides idle subagents until asked", async () => {

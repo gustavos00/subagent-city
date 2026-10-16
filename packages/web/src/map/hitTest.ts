@@ -1,20 +1,36 @@
 import type { MapModel, MapNode, Positions } from "../lib/layout";
-import { readNodeRadius, toScreen, type Camera } from "./geometry";
+import { HIT_PADDING, IDLE_PILL } from "./constants";
+import { convertToScreen, readScaledRadius, type Camera } from "./geometry";
+import { readIdlePillWidth } from "./textMetrics";
 
-/** The node under the screen point (px, py), or null. The idle pill is a wide target; the others are circles. */
+interface Point {
+  x: number;
+  y: number;
+}
+
+function isOnIdlePill(label: string, p: Point, px: number, py: number): boolean {
+  const left = p.x - IDLE_PILL.left;
+  return (
+    px >= left &&
+    px <= left + readIdlePillWidth(label) &&
+    Math.abs(py - p.y) <= IDLE_PILL.halfHeight + IDLE_PILL.hitSlack
+  );
+}
+
+/** The node under the screen point (px, py), or null. The idle pill is a rectangle; the others are circles. */
 export function findNodeAt(model: MapModel, pos: Positions, cam: Camera, px: number, py: number): MapNode | null {
   let best: MapNode | null = null;
   let bestDistance = Infinity;
   for (const node of model.nodes) {
     const at = pos.get(node.id);
     if (!at) continue;
-    const p = toScreen(at, cam);
+    const p = convertToScreen(at, cam);
     if (node.type === "idle") {
-      if (px >= p.x - 8 && px <= p.x + 110 && Math.abs(py - p.y) <= 11) return node;
+      if (isOnIdlePill(node.label, p, px, py)) return node;
       continue;
     }
     const d = Math.hypot(px - p.x, py - p.y);
-    if (d <= readNodeRadius(node) * Math.max(0.6, cam.k) + 8 && d < bestDistance) {
+    if (d <= readScaledRadius(node, cam) + HIT_PADDING && d < bestDistance) {
       best = node;
       bestDistance = d;
     }

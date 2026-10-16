@@ -1,4 +1,14 @@
 import { COLUMN_X, type MapModel, type MapNode, type Positions } from "../lib/layout";
+import {
+  FIT_MARGIN,
+  MAX_FIT_ZOOM,
+  MAX_ZOOM,
+  MIN_FIT_ZOOM,
+  MIN_NODE_SCALE,
+  MIN_ZOOM,
+  NODE_RADIUS,
+  WHEEL_LINE_PX,
+} from "./constants";
 
 export interface Camera {
   x: number;
@@ -16,11 +26,17 @@ interface Size {
   height: number;
 }
 
-export function readNodeRadius(node: MapNode): number {
-  return node.type === "session" ? 11 : node.type === "project" ? 9 : 7;
+/** Nodes keep a readable size when zoomed far out. */
+export function readNodeScale(cam: Camera): number {
+  return Math.max(MIN_NODE_SCALE, cam.k);
 }
 
-export function toScreen(point: Point, cam: Camera): Point {
+/** The node's radius on screen. */
+export function readScaledRadius(node: MapNode, cam: Camera): number {
+  return NODE_RADIUS[node.type] * readNodeScale(cam);
+}
+
+export function convertToScreen(point: Point, cam: Camera): Point {
   return { x: point.x * cam.k + cam.x, y: point.y * cam.k + cam.y };
 }
 
@@ -30,31 +46,38 @@ function readBounds(model: MapModel, pos: Positions) {
   const xs = points.map((p) => p.x);
   const ys = points.map((p) => p.y);
   return {
-    minX: Math.min(...xs) - 260,
-    maxX: Math.max(...xs) + 240,
-    minY: Math.min(...ys) - 50,
-    maxY: Math.max(...ys) + 70,
+    minX: Math.min(...xs) - FIT_MARGIN.left,
+    maxX: Math.max(...xs) + FIT_MARGIN.right,
+    minY: Math.min(...ys) - FIT_MARGIN.top,
+    maxY: Math.max(...ys) + FIT_MARGIN.bottom,
   };
 }
 
 /** The camera that shows the whole map, anchored to the top when it is taller than wide. */
 export function createFitCamera(model: MapModel, pos: Positions, { width, height }: Size): Camera {
   const b = readBounds(model, pos);
-  const k = Math.min(1.4, Math.max(0.2, Math.min(width / (b.maxX - b.minX), height / (b.maxY - b.minY))));
+  const fit = Math.min(width / (b.maxX - b.minX), height / (b.maxY - b.minY));
+  const k = Math.min(MAX_FIT_ZOOM, Math.max(MIN_FIT_ZOOM, fit));
   return {
     k,
     x: width / 2 - ((b.minX + b.maxX) / 2) * k,
-    y: Math.min(height / 2 - ((b.minY + b.maxY) / 2) * k, 30 - b.minY * k),
+    y: Math.min(height / 2 - ((b.minY + b.maxY) / 2) * k, FIT_MARGIN.anchorTop - b.minY * k),
   };
 }
 
 /** Zooms by `factor` keeping the screen point (cx, cy) fixed. */
 export function createZoomedCamera(cam: Camera, factor: number, cx: number, cy: number): Camera {
-  const k = Math.min(3, Math.max(0.15, cam.k * factor));
+  const k = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, cam.k * factor));
   const f = k / cam.k;
   return { k, x: cx - (cx - cam.x) * f, y: cy - (cy - cam.y) * f };
 }
 
 export function readColumnX(col: number): number {
   return COLUMN_X[col] ?? 0;
+}
+
+/** The wheel movement in pixels, whether the device reports pixels, lines or pages. */
+export function readWheelPixels(event: Pick<WheelEvent, "deltaY" | "deltaMode">, pageHeight: number): number {
+  const unit = [1, WHEEL_LINE_PX, pageHeight][event.deltaMode] ?? 1;
+  return event.deltaY * unit;
 }

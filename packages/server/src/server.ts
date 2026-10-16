@@ -1,5 +1,6 @@
 // A small local web server: the web build and one read-only endpoint with the open sessions.
 // It listens on 127.0.0.1 only and answers only requests addressed to localhost, so other sites cannot read it.
+import type { AddressInfo } from "node:net";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,7 +20,6 @@ const SECURITY_HEADERS = {
 };
 
 interface SessionServerOptions {
-  port: number;
   readSessions?: () => Promise<Session[]>;
   publicDir?: string;
 }
@@ -37,25 +37,24 @@ interface SessionsCache {
 }
 
 /**
- * Whether a request is addressed to this machine (stops DNS rebinding: a foreign page whose name resolves to 127.0.0.1).
+ * Whether a request is addressed to this machine on the port in use (stops DNS rebinding: a foreign page whose name resolves to 127.0.0.1).
  * @param host - the Host header
  * @param port - the port the server listens on
  */
 export function isLocalHost(host: string | undefined, port: number): boolean {
-  const allowed = new Set([`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]);
+  const allowed = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
   return host !== undefined && allowed.has(host.toLowerCase());
 }
 
 /**
  * Builds the server.
- * @param options - port (for the Host check), readSessions (to swap the source in tests) and publicDir (the web build)
+ * @param options - readSessions (to swap the source in tests) and publicDir (the web build)
  * @returns an http.Server, not yet listening
  */
 export function createSessionServer({
-  port,
   readSessions = readOpenSessions,
   publicDir = DEFAULT_PUBLIC_DIR,
-}: SessionServerOptions): Server {
+}: SessionServerOptions = {}): Server {
   let cache: SessionsCache = { at: 0, value: null, loading: null };
   const loadSessions = (): Promise<Session[]> => {
     if (cache.value && Date.now() - cache.at < CACHE_MS) return Promise.resolve(cache.value);
@@ -71,7 +70,7 @@ export function createSessionServer({
     return cache.loading;
   };
 
-  const buildReply = async (req: IncomingMessage): Promise<Reply> => {
+  const buildReply = async (req: IncomingMessage, port: number): Promise<Reply> => {
     if (!isLocalHost(req.headers.host, port))
       return { status: 403, type: TEXT, body: "Only localhost may use this server." };
     if (req.method !== "GET" && req.method !== "HEAD") return { status: 405, type: TEXT, body: "Read-only." };
@@ -89,15 +88,17 @@ export function createSessionServer({
   };
 
   const answer = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    const { status, type, body } = await buildReply(req);
+    const { port } = server.address() as AddressInfo;
+    const { status, type, body } = await buildReply(req, port);
     res.writeHead(status, { "content-type": type, "cache-control": "no-store", ...SECURITY_HEADERS });
     res.end(body);
   };
 
-  return createServer((req, res) => {
+  const server = createServer((req, res) => {
     answer(req, res).catch(() => {
       if (!res.headersSent) res.writeHead(500, SECURITY_HEADERS);
       res.end();
     });
   });
+  return server;
 }

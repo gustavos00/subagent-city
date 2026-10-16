@@ -2,12 +2,9 @@ export type SessionState = "working" | "idle";
 
 export type SubagentState = "working" | "recent" | "done" | "idle";
 
-export interface LastAction {
-  kind: "tool" | "text";
-  tool: string;
-  detail: string;
-  at: string | null;
-}
+export type LastAction =
+  | { kind: "tool"; tool: string; detail: string; at: string | null }
+  | { kind: "text"; detail: string; at: string | null };
 
 export interface Subagent {
   id: string;
@@ -25,15 +22,12 @@ export interface Session {
   id: string;
   title: string;
   project: string;
-  cwd: string;
   state: SessionState;
-  entrypoint: string;
   model: string;
   startedAt: string | null;
   lastActivity: string;
-  memoryMB: number | null;
-  subagents: number;
-  subagentList: Subagent[];
+  subagentCount: number;
+  subagents: Subagent[];
 }
 
 export interface SessionsResponse {

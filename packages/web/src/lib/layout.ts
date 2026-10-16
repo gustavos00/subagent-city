@@ -1,13 +1,13 @@
 import type { Session, Subagent, SubagentState } from "@subagent-city/shared";
+import { foldIdleSubagents } from "./idle";
+import { sortActiveFirst } from "./sort";
 
 /** Vertical room per row and between groups (world units). */
 export const ROW_STEP = 46;
-export const GROUP_GAP = 64;
+const GROUP_GAP = 64;
 export const PROJECT_GAP = 64;
 /** The x of each column: sessions, subagents, projects. */
 export const COLUMN_X = [0, 340, 680] as const;
-
-const STATE_RANK: Record<SubagentState, number> = { working: 0, recent: 1, done: 2, idle: 3 };
 
 interface Point {
   x: number;
@@ -32,6 +32,7 @@ interface SubagentNode {
   state: SubagentState;
   sub: Subagent;
   parent: string;
+  sessionId: string;
 }
 
 interface IdleNode {
@@ -40,7 +41,6 @@ interface IdleNode {
   col: 1;
   label: string;
   state: "idle";
-  count: number;
   open: boolean;
   sessionId: string;
   parent: string;
@@ -71,14 +71,6 @@ export interface MapModel {
 }
 
 export type Positions = Map<string, Point>;
-
-/** A copy of the list with the busiest first, keeping the order within each state. */
-export function sortActiveFirst<T extends { state: SubagentState }>(list: readonly T[]): T[] {
-  return list
-    .map((item, index) => ({ item, index }))
-    .sort((a, b) => STATE_RANK[a.item.state] - STATE_RANK[b.item.state] || a.index - b.index)
-    .map((entry) => entry.item);
-}
 
 interface Block {
   sum: number;
@@ -115,6 +107,76 @@ export function spreadApart(wanted: readonly number[], gap: number): number[] {
   return result;
 }
 
+function createSessionNode(session: Session): SessionNode {
+  return {
+    id: `s:${session.id}`,
+    type: "session",
+    col: 0,
+    label: session.title,
+    state: session.state,
+    session,
+    kids: [],
+  };
+}
+
+function createSubagentNode(session: Session, sub: Subagent, parent: string): SubagentNode {
+  return {
+    id: `a:${session.id}:${sub.id}`,
+    type: "subagent",
+    col: 1,
+    label: sub.name || "Unnamed",
+    state: sub.state,
+    sub,
+    parent,
+    sessionId: session.id,
+  };
+}
+
+function createIdleNode(session: Session, idleCount: number, isOpen: boolean, parent: string): IdleNode {
+  return {
+    id: `idle:${session.id}`,
+    type: "idle",
+    col: 1,
+    label: isOpen ? `− hide ${idleCount} idle` : `+${idleCount} idle`,
+    state: "idle",
+    open: isOpen,
+    sessionId: session.id,
+    parent,
+  };
+}
+
+function createKidNodes(node: SessionNode, expanded: ReadonlySet<string>): ChildNode[] {
+  const { session } = node;
+  const isOpen = expanded.has(session.id);
+  const { shown, idleCount } = foldIdleSubagents(session, isOpen);
+  const kids: ChildNode[] = shown.map((sub) => createSubagentNode(session, sub, node.id));
+  if (idleCount > 0) kids.push(createIdleNode(session, idleCount, isOpen, node.id));
+  return kids;
+}
+
+function createEdge(from: MapNode, to: MapNode): MapEdge {
+  return { from: from.id, to: to.id, active: to.type === "subagent" ? to.state === "working" : false };
+}
+
+function addToProject(projects: Map<string, ProjectNode>, session: Session): ProjectNode | null {
+  if (!session.project) return null;
+  let project = projects.get(session.project);
+  if (!project) {
+    project = {
+      id: `p:${session.project}`,
+      type: "project",
+      col: 2,
+      label: session.project,
+      state: "idle",
+      sessions: [],
+    };
+    projects.set(session.project, project);
+  }
+  project.sessions.push(session);
+  if (session.state === "working") project.state = "working";
+  return project;
+}
+
 /**
  * Turns the sessions into nodes and edges. Idle subagents fold into one "+N idle" node unless their session is in `expanded`.
  * @param sessions - from /api/sessions
@@ -125,69 +187,15 @@ export function buildMapModel(sessions: readonly Session[], expanded: ReadonlySe
   const edges: MapEdge[] = [];
   const projects = new Map<string, ProjectNode>();
   for (const session of sortActiveFirst(sessions)) {
-    const node: SessionNode = {
-      id: `s:${session.id}`,
-      type: "session",
-      col: 0,
-      label: session.title,
-      state: session.state,
-      session,
-      kids: [],
-    };
-    nodes.push(node);
-    const subs = sortActiveFirst(session.subagentList);
-    const open = expanded.has(session.id);
-    const shown = open ? subs : subs.filter((sub) => sub.state !== "idle");
-    const hidden = subs.length - shown.length + Math.max(0, session.subagents - subs.length);
-    for (const sub of shown) {
-      const kid: SubagentNode = {
-        id: `a:${session.id}:${sub.id}`,
-        type: "subagent",
-        col: 1,
-        label: sub.name || "Unnamed",
-        state: sub.state,
-        sub,
-        parent: node.id,
-      };
-      node.kids.push(kid);
-      nodes.push(kid);
-      edges.push({ from: node.id, to: kid.id, active: sub.state === "working" });
-    }
-    if (hidden > 0 || (open && subs.some((sub) => sub.state === "idle"))) {
-      const count = open ? subs.filter((sub) => sub.state === "idle").length : hidden;
-      const pill: IdleNode = {
-        id: `idle:${session.id}`,
-        type: "idle",
-        col: 1,
-        label: open ? `− hide ${count} idle` : `+${count} idle`,
-        state: "idle",
-        count,
-        open,
-        sessionId: session.id,
-        parent: node.id,
-      };
-      node.kids.push(pill);
-      nodes.push(pill);
-      edges.push({ from: node.id, to: pill.id, active: false });
-    }
-    if (session.project) {
-      let project = projects.get(session.project);
-      if (!project) {
-        project = {
-          id: `p:${session.project}`,
-          type: "project",
-          col: 2,
-          label: session.project,
-          state: "idle",
-          sessions: [],
-        };
-        projects.set(session.project, project);
-        nodes.push(project);
-      }
-      project.sessions.push(session);
-      if (session.state === "working") project.state = "working";
-      edges.push({ from: node.id, to: project.id, active: session.state === "working" });
-    }
+    const node = createSessionNode(session);
+    node.kids = createKidNodes(node, expanded);
+    nodes.push(node, ...node.kids);
+    edges.push(...node.kids.map((kid) => createEdge(node, kid)));
+    const isNewProject = session.project !== "" && !projects.has(session.project);
+    const project = addToProject(projects, session);
+    if (!project) continue;
+    if (isNewProject) nodes.push(project);
+    edges.push({ from: node.id, to: project.id, active: session.state === "working" });
   }
   return { nodes, edges };
 }
@@ -198,7 +206,7 @@ export function buildMapModel(sessions: readonly Session[], expanded: ReadonlySe
  * @param model - from buildMapModel
  * @returns the position of every node by id
  */
-export function layoutMap(model: MapModel): Positions {
+export function placeMapNodes(model: MapModel): Positions {
   const pos: Positions = new Map();
   let cursor = 0;
   for (const node of model.nodes) {

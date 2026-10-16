@@ -197,7 +197,7 @@ const keepBusy = setInterval(() => {
 }, 20_000);
 
 const port = Number(process.env["SUBAGENT_CITY_PORT"] ?? 4778);
-const server = createSessionServer({ port, readSessions: () => readOpenSessions({ claudeDir: dir }) });
+const server = createSessionServer({ readSessions: () => readOpenSessions({ claudeDir: dir }) });
 server.listen(port, "127.0.0.1", () => {
   console.log(`Subagent City demo on http://localhost:${port}/ (made-up data; Ctrl+C to stop)`);
 });

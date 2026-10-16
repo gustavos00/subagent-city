@@ -14,7 +14,7 @@ function readPort(argv: string[]): number {
 }
 
 const port = readPort(process.argv.slice(2));
-const server = createSessionServer({ port });
+const server = createSessionServer();
 server.on("error", (error) => {
   const taken = "code" in error && error.code === "EADDRINUSE";
   console.error(taken ? `Port ${port} is taken. Try --port <another>.` : error.message);

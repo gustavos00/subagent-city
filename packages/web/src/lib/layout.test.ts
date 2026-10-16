@@ -1,27 +1,34 @@
 import type { Session, Subagent } from "@subagent-city/shared";
 import { createSession, createSubagent } from "../test/fixtures";
-import { buildMapModel, layoutMap, PROJECT_GAP, ROW_STEP, sortActiveFirst, spreadApart } from "./layout";
+import { buildMapModel, placeMapNodes, PROJECT_GAP, ROW_STEP, spreadApart } from "./layout";
+import { sortActiveFirst } from "./sort";
 
-const sub = (id: string, state: Subagent["state"]) => createSubagent({ id, name: id, state, model: "sonnet" });
+const createTestSubagent = (id: string, state: Subagent["state"]) =>
+  createSubagent({ id, name: id, state, model: "sonnet" });
 const quiet: Session = createSession({
   id: "q",
   title: "Quiet",
   project: "shop",
   state: "idle",
-  subagentList: [sub("old", "idle")],
+  subagents: [createTestSubagent("old", "idle")],
 });
 const busy: Session = createSession({
   id: "b",
   title: "Busy",
   project: "shop",
   state: "working",
-  subagentList: [sub("x", "idle"), sub("y", "done"), sub("z", "working")],
+  subagents: [createTestSubagent("x", "idle"), createTestSubagent("y", "done"), createTestSubagent("z", "working")],
 });
 
 describe("layout", () => {
   it("puts the busiest first and keeps the order within a state", () => {
-    const sorted = sortActiveFirst([sub("a", "idle"), sub("b", "working"), sub("c", "done"), sub("d", "working")]);
-    expect(sorted.map((s) => s.id)).toEqual(["b", "d", "c", "a"]);
+    const sorted = sortActiveFirst([
+      createTestSubagent("a", "idle"),
+      createTestSubagent("b", "working"),
+      createTestSubagent("c", "done"),
+      createTestSubagent("d", "working"),
+    ]);
+    expect(sorted.map((item) => item.id)).toEqual(["b", "d", "c", "a"]);
   });
 
   it("spreadApart keeps the order and the minimum gap, moving items as little as it can", () => {
@@ -43,9 +50,9 @@ describe("layout", () => {
   });
 
   it("keeps every column's nodes at least a row apart and puts the working session first", () => {
-    const other = createSession({ id: "c", title: "Other", project: "blog", state: "idle", subagentList: [] });
+    const other = createSession({ id: "c", title: "Other", project: "blog", state: "idle", subagents: [] });
     const model = buildMapModel([busy, quiet, other]);
-    const pos = layoutMap(model);
+    const pos = placeMapNodes(model);
     for (const col of [0, 1, 2]) {
       const ys = model.nodes
         .filter((n) => n.col === col)
@@ -56,6 +63,6 @@ describe("layout", () => {
       }
     }
     expect(pos.get("s:b")?.y).toBeLessThan(pos.get("s:q")?.y ?? NaN);
-    expect(layoutMap(model)).toEqual(pos);
+    expect(placeMapNodes(model)).toEqual(pos);
   });
 });

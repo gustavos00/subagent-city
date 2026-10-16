@@ -11,11 +11,11 @@ export function QuietSession({ session, isSelected, onSelect }: QuietSessionProp
   return (
     <li
       data-session={session.id}
-      aria-current={isSelected ? "true" : undefined}
       className={`rounded-[10px] border bg-card ${isSelected ? "border-recent" : "border-border"}`}
     >
       <button
         type="button"
+        aria-pressed={isSelected}
         onClick={() => {
           onSelect(session.id);
         }}

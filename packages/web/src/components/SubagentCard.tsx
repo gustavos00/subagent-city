@@ -36,7 +36,7 @@ export function SubagentCard({ sub }: { sub: Subagent }) {
       </span>
       {sub.task ? <span className="text-[13px] text-muted">{sub.task}</span> : null}
       {action ? (
-        <span className="mt-0.5 rounded-md bg-white/3 px-1.5 py-1 font-mono text-xs leading-snug text-[#b9c2d6] [overflow-wrap:anywhere]">
+        <span className="mt-0.5 rounded-md bg-white/3 px-1.5 py-1 font-mono text-xs leading-snug text-code [overflow-wrap:anywhere]">
           {action}
         </span>
       ) : null}

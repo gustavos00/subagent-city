@@ -23,6 +23,9 @@
   --color-sonnet-text: #c4d0ff;
   --color-haiku: #5adca0;
   --color-haiku-text: #b8f0d8;
+  --color-fable: #f0a35a;
+  --color-fable-text: #ffd9b0;
+  --color-code: #b9c2d6;
   --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }

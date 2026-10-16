@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import {
-  findModel,
+  findFirstModel,
+  findLastModel,
   parseSubagentMeta,
   pickProjectName,
   pickSessionState,
@@ -41,9 +42,10 @@ test("the model is read from the transcript when the meta file has none", () => 
     buildLine({ type: "assistant", message: { model: "claude-sonnet-4-5" } }),
     buildLine({ type: "assistant", message: { model: "claude-opus-4-1" } }),
   ].join("\n");
-  expect(findModel(text)).toBe("claude-sonnet-4-5");
-  expect(findModel(text, true)).toBe("claude-opus-4-1");
-  expect(findModel("nothing here")).toBe("");
+  expect(findFirstModel(text)).toBe("claude-sonnet-4-5");
+  expect(findLastModel(text)).toBe("claude-opus-4-1");
+  expect(findFirstModel("nothing here")).toBe("");
+  expect(findLastModel("nothing here")).toBe("");
 });
 
 test("the last action is the last tool call, or else the last words", () => {
@@ -74,7 +76,7 @@ test("the last action is the last tool call, or else the last words", () => {
   });
   expect(readLastAction(file)?.detail).toBe("app.ts");
   const words = buildLine({ type: "assistant", message: { content: [{ type: "text", text: "All done." }] } });
-  expect(readLastAction(words)).toEqual({ kind: "text", tool: "", detail: "All done.", at: null });
+  expect(readLastAction(words)).toEqual({ kind: "text", detail: "All done.", at: null });
   expect(readLastAction("not json\n{broken")).toBeNull();
 });
 
@@ -148,20 +150,23 @@ test("only sessions whose process is running are open, with their subagents", as
 
     const sessions = await readOpenSessions({ claudeDir, now });
     expect(sessions).toHaveLength(1);
-    const [session] = sessions;
-    expect(session?.title).toBe("Checkout revamp");
-    expect(session?.project).toBe("shop");
-    expect(session?.state).toBe("working");
-    expect(session?.model).toBe("claude-opus-4-1");
-    expect(session?.subagents).toBe(2);
-    const [ana, rui] = session?.subagentList ?? [];
-    expect(ana?.name).toBe("Ana");
-    expect(ana?.model).toBe("claude-haiku-4-5");
-    expect(ana?.state).toBe("working");
-    expect(ana?.startedAt).toBe("2026-01-01T10:00:00Z");
-    expect(ana?.lastAction).toEqual({ kind: "tool", tool: "Read", detail: "cart.ts", at: null });
-    expect(rui?.state).toBe("idle");
-    expect(rui?.model).toBe("sonnet");
+    expect(sessions[0]).toMatchObject({
+      title: "Checkout revamp",
+      project: "shop",
+      state: "working",
+      model: "claude-opus-4-1",
+      subagentCount: 2,
+    });
+    expect(sessions[0]?.subagents).toMatchObject([
+      {
+        name: "Ana",
+        model: "claude-haiku-4-5",
+        state: "working",
+        startedAt: "2026-01-01T10:00:00Z",
+        lastAction: { kind: "tool", tool: "Read", detail: "cart.ts", at: null },
+      },
+      { state: "idle", model: "sonnet" },
+    ]);
   } finally {
     await rm(claudeDir, { recursive: true, force: true });
   }
@@ -169,4 +174,50 @@ test("only sessions whose process is running are open, with their subagents", as
 
 test("no Claude folder means no sessions, not an error", async () => {
   expect(await readOpenSessions({ claudeDir: join(tmpdir(), "does-not-exist-subagent-city") })).toEqual([]);
+});
+
+test("a tail that starts in the middle of a line still yields the last action", () => {
+  const whole = buildLine({
+    type: "assistant",
+    message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "/a/b.ts" } }] },
+  });
+  const tail = `${whole.slice(20)}\n${whole}`;
+  expect(readLastAction(tail)).toEqual({ kind: "tool", tool: "Read", detail: "b.ts", at: null });
+  expect(readLastAction(whole.slice(20))).toBeNull();
+});
+
+test("a transcript that has not changed is not read again", async () => {
+  const claudeDir = await mkdtemp(join(tmpdir(), "subagent-city-"));
+  try {
+    const folder = join(claudeDir, "projects", "-code-shop");
+    const subs = join(folder, SESSION, "subagents");
+    await mkdir(join(claudeDir, "sessions"));
+    await mkdir(subs, { recursive: true });
+    await writeFile(
+      join(claudeDir, "sessions", `${process.pid}.json`),
+      JSON.stringify({ pid: process.pid, sessionId: SESSION, status: "idle", cwd: "/code/shop" }),
+    );
+    await writeFile(join(folder, `${SESSION}.jsonl`), buildLine({ type: "user" }));
+    const file = join(subs, "agent-a.jsonl");
+    const writeAction = (tool: string) =>
+      writeFile(
+        file,
+        buildLine({ type: "assistant", message: { content: [{ type: "tool_use", name: tool, input: {} }] } }),
+      );
+    const fixed = new Date(Date.now() - 5 * 60_000);
+    await writeAction("First");
+    await utimes(file, fixed, fixed);
+
+    const lastTool = async () => (await readOpenSessions({ claudeDir }))[0]?.subagents[0]?.lastAction;
+    expect(await lastTool()).toMatchObject({ tool: "First" });
+
+    await writeAction("Second");
+    await utimes(file, fixed, fixed);
+    expect(await lastTool()).toMatchObject({ tool: "First" });
+
+    await utimes(file, new Date(fixed.getTime() + 1000), new Date(fixed.getTime() + 1000));
+    expect(await lastTool()).toMatchObject({ tool: "Second" });
+  } finally {
+    await rm(claudeDir, { recursive: true, force: true });
+  }
 });

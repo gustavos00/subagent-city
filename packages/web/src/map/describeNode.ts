@@ -10,7 +10,7 @@ export function describeNode(node: MapNode): string {
   switch (node.type) {
     case "session": {
       const s = node.session;
-      return [STATE_LABELS[s.state], s.project, formatModelName(s.model), formatCount(s.subagents, "subagent")]
+      return [STATE_LABELS[s.state], s.project, formatModelName(s.model), formatCount(s.subagentCount, "subagent")]
         .filter(Boolean)
         .join(" · ");
     }

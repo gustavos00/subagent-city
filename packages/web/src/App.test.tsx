@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { App } from "./App";
 import { createSession, createSubagent } from "./test/fixtures";
 
@@ -20,7 +21,7 @@ describe("App", () => {
           id: "a",
           title: "Checkout",
           state: "working",
-          subagentList: [
+          subagents: [
             createSubagent({ id: "1", name: "Maya" }),
             createSubagent({ id: "2", name: "Zoe", state: "done" }),
           ],
@@ -45,6 +46,18 @@ describe("App", () => {
     mockFetch(() => new Response("nope", { status: 500 }));
     render(<App />);
     expect(await screen.findByText("Lost contact with the local server. Is it still running?")).toBeInTheDocument();
-    expect(screen.getByText("live").querySelector("i")).toHaveClass("bg-stale");
+    expect(screen.getByText("live")).toHaveAttribute("data-state", "stale");
+  });
+
+  it("marks a session as pressed when its panel button is clicked, and clears it on a second click", async () => {
+    mockFetch(() => replyWith([createSession({ id: "a", title: "Checkout", subagents: [createSubagent()] })]));
+    render(<App />);
+    const user = userEvent.setup();
+    const button = await screen.findByRole("button", { name: /^Checkout/ });
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    await user.click(button);
+    expect(button).toHaveAttribute("aria-pressed", "true");
+    await user.click(button);
+    expect(button).toHaveAttribute("aria-pressed", "false");
   });
 });

@@ -18,7 +18,7 @@ describe("SubagentCard", () => {
   });
 
   it("says a done subagent handed its result back", () => {
-    const lastAction = { kind: "text" as const, tool: "", detail: "ok", at: null };
+    const lastAction = { kind: "text" as const, detail: "ok", at: null };
     render(
       <ul>
         <SubagentCard sub={createSubagent({ state: "done", lastAction })} />

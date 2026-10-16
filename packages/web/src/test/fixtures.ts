@@ -16,20 +16,17 @@ export function createSubagent(overrides: Partial<Subagent> = {}): Subagent {
 }
 
 export function createSession(overrides: Partial<Session> = {}): Session {
-  const subagentList = overrides.subagentList ?? [];
+  const subagents = overrides.subagents ?? [];
   return {
     id: "session",
     title: "Checkout redesign",
     project: "storefront",
-    cwd: "/code/storefront",
     state: "idle",
-    entrypoint: "cli",
     model: "claude-opus-4-5",
     startedAt: null,
     lastActivity: new Date().toISOString(),
-    memoryMB: null,
-    subagents: subagentList.length,
-    subagentList,
+    subagentCount: subagents.length,
+    subagents: subagents,
     ...overrides,
   };
 }

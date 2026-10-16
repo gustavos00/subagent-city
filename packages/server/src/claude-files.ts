@@ -1,21 +1,19 @@
 // Low-level, read-only access to the files Claude Code keeps in ~/.claude.
 // These files are Claude Code's own, not a public API: every read fails soft and every field is checked.
-import { execFile } from "node:child_process";
 import { open, readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const HEAD_BYTES = 256 * 1024;
+const HEAD_BYTES = 16 * 1024;
 const TAIL_BYTES = 256 * 1024;
 
-export interface OpenProcess {
+interface OpenProcess {
   pid: number;
   sessionId: string;
   name: string;
   status: string;
   cwd: string;
-  entrypoint: string;
   startedAt: number | null;
 }
 
@@ -27,26 +25,30 @@ export function resolveClaudeDir(): string {
   return process.env["SUBAGENT_CITY_CLAUDE_DIR"] ?? join(homedir(), ".claude");
 }
 
-/**
- * The start or the end of a file as text; transcripts can be huge, so only a bounded chunk is ever read.
- * @param file - the file to read
- * @param fromEnd - true for the tail, false for the head
- * @returns the chunk, or "" when the file cannot be read
- */
-export async function readChunk(file: string, fromEnd: boolean): Promise<string> {
+async function readBytes(file: string, maxBytes: number, pickOffset: (size: number, length: number) => number) {
   let handle;
   try {
     handle = await open(file, "r");
     const { size } = await handle.stat();
-    const length = Math.min(size, fromEnd ? TAIL_BYTES : HEAD_BYTES);
+    const length = Math.min(size, maxBytes);
     const buffer = Buffer.alloc(length);
-    await handle.read(buffer, 0, length, fromEnd ? size - length : 0);
+    await handle.read(buffer, 0, length, pickOffset(size, length));
     return buffer.toString("utf8");
   } catch {
     return "";
   } finally {
     await handle?.close();
   }
+}
+
+/** The start of a file as text (transcripts can be huge, so only a bounded chunk is read); "" when unreadable. */
+export function readHead(file: string): Promise<string> {
+  return readBytes(file, HEAD_BYTES, () => 0);
+}
+
+/** The end of a file as text, which may begin mid-line; "" when unreadable. */
+export function readTail(file: string): Promise<string> {
+  return readBytes(file, TAIL_BYTES, (size, length) => size - length);
 }
 
 export async function readJson(file: string): Promise<unknown> {
@@ -66,23 +68,23 @@ function isAlive(pid: number): boolean {
   }
 }
 
-/**
- * The resident memory of some processes.
- * @param pids - the processes to look at
- * @returns pid to megabytes; empty on Windows or when `ps` fails
- */
-export function readMemory(pids: number[]): Promise<Map<number, number>> {
-  if (!pids.length || process.platform === "win32") return Promise.resolve(new Map<number, number>());
-  return new Promise((resolve) => {
-    execFile("ps", ["-o", "pid=,rss=", "-p", pids.join(",")], { timeout: 4000 }, (_error, stdout) => {
-      const rss = new Map<number, number>();
-      for (const line of stdout.split("\n")) {
-        const match = /^\s*(\d+)\s+(\d+)/.exec(line);
-        if (match) rss.set(Number(match[1]), Math.round(Number(match[2]) / 1024));
-      }
-      resolve(rss);
-    });
-  });
+export function pickString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function parseOpenProcess(entry: unknown): OpenProcess | null {
+  if (!isRecord(entry)) return null;
+  const { pid, sessionId, startedAt } = entry;
+  if (typeof pid !== "number" || !Number.isInteger(pid)) return null;
+  if (typeof sessionId !== "string" || !SESSION_ID.test(sessionId)) return null;
+  return {
+    pid,
+    sessionId,
+    name: pickString(entry["name"]),
+    status: pickString(entry["status"]),
+    cwd: pickString(entry["cwd"]),
+    startedAt: typeof startedAt === "number" && Number.isFinite(startedAt) ? startedAt : null,
+  };
 }
 
 /**
@@ -98,21 +100,8 @@ export async function readOpenProcesses(dir: string): Promise<OpenProcess[]> {
   }
   const found: OpenProcess[] = [];
   for (const file of files) {
-    const entry = await readJson(join(dir, file));
-    if (!isRecord(entry)) continue;
-    const { pid, sessionId } = entry;
-    if (typeof pid !== "number" || !Number.isInteger(pid)) continue;
-    if (typeof sessionId !== "string" || !SESSION_ID.test(sessionId) || !isAlive(pid)) continue;
-    const { name, status, cwd, entrypoint, startedAt } = entry;
-    found.push({
-      pid,
-      sessionId,
-      name: typeof name === "string" ? name : "",
-      status: typeof status === "string" ? status : "",
-      cwd: typeof cwd === "string" ? cwd : "",
-      entrypoint: typeof entrypoint === "string" ? entrypoint : "",
-      startedAt: typeof startedAt === "number" && Number.isFinite(startedAt) ? startedAt : null,
-    });
+    const proc = parseOpenProcess(await readJson(join(dir, file)));
+    if (proc && isAlive(proc.pid)) found.push(proc);
   }
   return found;
 }

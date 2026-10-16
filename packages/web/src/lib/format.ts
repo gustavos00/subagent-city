@@ -7,7 +7,9 @@ export const STATE_LABELS: Record<SubagentState, string> = {
   idle: "Idle",
 };
 
-type ModelFamily = "opus" | "sonnet" | "haiku" | "fable";
+const MODEL_FAMILIES = ["opus", "sonnet", "haiku", "fable"] as const;
+
+export type ModelFamily = (typeof MODEL_FAMILIES)[number];
 
 /**
  * A model id as people say it: "claude-opus-4-5" → "Opus 4.5", "sonnet" → "Sonnet".
@@ -25,10 +27,10 @@ export function formatModelName(model: string): string {
   return family + version;
 }
 
-/** The model family in lower case, for colouring; null when unknown. */
+/** The model family, for colouring; null when unknown. */
 export function readModelFamily(model: string): ModelFamily | null {
-  const family = /(opus|sonnet|haiku|fable)/i.exec(model)?.[1]?.toLowerCase();
-  return family ? (family as ModelFamily) : null;
+  const lower = model.toLowerCase();
+  return MODEL_FAMILIES.find((family) => lower.includes(family)) ?? null;
 }
 
 /** "just now", "4 min ago", "2 h ago" from an ISO time; "" when the time is not readable. */
@@ -44,8 +46,10 @@ export function formatAgo(iso: string, now: number = Date.now()): string {
 export function describeAction(sub: Subagent): string {
   const action = sub.lastAction;
   if (!action) return "";
+  if (action.kind === "text")
+    return sub.state === "done" ? "Handed its result back to the session" : `“${action.detail}”`;
   if (sub.state === "done" || /handback/i.test(action.tool)) return "Handed its result back to the session";
-  return action.kind === "tool" ? [action.tool, action.detail].filter(Boolean).join(" · ") : `“${action.detail}”`;
+  return [action.tool, action.detail].filter(Boolean).join(" · ");
 }
 
 export function formatCount(count: number, noun: string): string {
@@ -57,7 +61,7 @@ export function formatSummary(sessions: readonly Session[] | null, isStale: bool
   if (isStale) return "Lost contact with the local server. Is it still running?";
   if (!sessions) return "Reading sessions…";
   if (!sessions.length) return "No open sessions";
-  const all = sessions.flatMap((session) => session.subagentList);
+  const all = sessions.flatMap((session) => session.subagents);
   const countState = (state: SubagentState): number => all.filter((sub) => sub.state === state).length;
   return `${formatCount(countState("working"), "subagent")} working · ${countState("recent")} paused · ${countState("done")} done · in ${formatCount(sessions.length, "open session")}`;
 }
